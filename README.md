@@ -1,6 +1,6 @@
 # NovaTech Solutions: Multi-Stage Automated CI/CD Pipeline
 
-![CI/CD](https://github.com/shahid0777442/novatech/actions/workflows/ci-cd.yml/badge.svg?branch=main)
+[![NovaTech CI/CD](https://github.com/shahid0777442/novatech/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/shahid0777442/novatech/actions/workflows/ci-cd.yml)
 
 **Live demo:** http://52.87.162.63/
 
