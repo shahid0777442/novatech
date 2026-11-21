@@ -17,7 +17,7 @@ permissions:
 jobs:
   # ---------- STAGE 1: STATIC ANALYSIS ----------
   lint:
-    name: Lint (ESLint)
+    name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +25,22 @@ jobs:
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
-      - name: Run ESLint
+      - name: Run linter (npm run lint)
         run: |
-          npx eslint . -f json -o eslint-report.json || echo "LINT_FAILED=1" >> "$GITHUB_ENV"
-          npx eslint . || true
-          test -z "$LINT_FAILED"
+          set -o pipefail
+          npm run lint 2>&1 | tee lint-report.txt
+      - name: Lint summary
+        if: always()
+        run: |
+          {
+            echo "### Lint results"
+            tail -n 5 lint-report.txt
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eslint-report
-          path: eslint-report.json
+          name: lint-report
+          path: lint-report.txt
 
   # ---------- STAGE 2: UNIT + API TESTS ----------
   test:
