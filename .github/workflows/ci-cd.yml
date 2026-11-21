@@ -106,7 +106,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: production
-      url: http://${{ secrets.SERVER_HOST }}
+     url: http://52.87.162.63
     steps:
       - name: Lowercase image name
         run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
