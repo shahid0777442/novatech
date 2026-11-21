@@ -16,5 +16,18 @@
     "smoke": "node scripts/smoke.js dist",
     "ci": "npm run lint && npm test && npm run build && npm run smoke"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "directories": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shahid0777442/novatech.git"
+  },
+  "keywords": [],
+  "author": "",
+  "bugs": {
+    "url": "https://github.com/shahid0777442/novatech/issues"
+  },
+  "homepage": "https://github.com/shahid0777442/novatech#readme"
 }
