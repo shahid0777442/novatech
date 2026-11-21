@@ -1,0 +1,20 @@
+{
+  "name": "novatech-company-site",
+  "version": "1.0.0",
+  "description": "NovaTech Solutions company website with a multi-stage CI/CD pipeline",
+  "main": "src/server.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "lint": "node scripts/lint.js",
+    "test": "node --test --test-reporter=spec",
+    "build": "node scripts/build.js",
+    "smoke": "node scripts/smoke.js dist",
+    "ci": "npm run lint && npm test && npm run build && npm run smoke"
+  },
+  "license": "MIT"
+}
