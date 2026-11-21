@@ -7,7 +7,8 @@
 Company website (HTML front end + dependency-free Node.js API) with a fully automated pipeline:
 **push → lint → unit tests → Docker build → deploy → health check → status report**.
 
-![Live demo](docs/live-demo.png)
+<img width="1440" height="2560" alt="live-demo-footer-build-version" src="https://github.com/user-attachments/assets/44e49f07-07fc-4314-99d5-8f128c197040" />
+
 
 ## Project structure
 
