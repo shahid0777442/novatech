@@ -1,0 +1,130 @@
+name: NovaTech CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ---------- STAGE 1: LINT ----------
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4          # code pull
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: Static analysis (ESLint)
+        run: npx eslint . -f json -o eslint-report.json || (npx eslint . && false)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: eslint-report, path: eslint-report.json }
+
+  # ---------- STAGE 2: UNIT TESTS ----------
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: Run unit tests
+        run: npm test | tee test-output.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: test-output, path: test-output.txt }
+
+  # ---------- STAGE 3: BUILD & PUSH IMAGE ----------
+  build:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions: { contents: read, packages: write }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          build-args: |
+            GIT_COMMIT=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+
+  # ---------- STAGE 4: DEPLOY ----------
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            docker pull ${{ env.IMAGE }}:${{ github.sha }}
+            docker rm -f novatech-prev 2>/dev/null || true
+            docker rename novatech novatech-prev 2>/dev/null || true
+            docker stop novatech-prev 2>/dev/null || true
+            docker run -d --name novatech -p 80:3000 --restart unless-stopped ${{ env.IMAGE }}:${{ github.sha }}
+
+      - name: Smoke test /api/health
+        run: |
+          for i in 1 2 3 4 5; do
+            sleep 5
+            code=$(curl -s -o health.json -w "%{http_code}" http://${{ secrets.SERVER_HOST }}/api/health) && [ "$code" = "200" ] && cat health.json && exit 0
+          done
+          echo "Health check failed"; exit 1
+
+      - name: Rollback on failure
+        if: failure()
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          script: |
+            docker rm -f novatech || true
+            docker rename novatech-prev novatech && docker start novatech
+
+  # ---------- STAGE 5: STATUS BOARD ----------
+  report:
+    needs: [lint, test, build, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write status board
+        run: |
+          {
+            echo "## NovaTech Pipeline Report"
+            echo "| Stage | Result |"
+            echo "|---|---|"
+            echo "| Lint | ${{ needs.lint.result }} |"
+            echo "| Unit tests | ${{ needs.test.result }} |"
+            echo "| Build | ${{ needs.build.result }} |"
+            echo "| Deploy | ${{ needs.deploy.result }} |"
+            echo ""
+            echo "- Commit: \`${{ github.sha }}\`"
+            echo "- Author: ${{ github.actor }}"
+            echo "- Branch: ${{ github.ref_name }}"
+            echo "- Run: #${{ github.run_number }}"
+            echo "- Time: $(date -u +'%Y-%m-%d %H:%M UTC')"
+          } >> "$GITHUB_STEP_SUMMARY"
