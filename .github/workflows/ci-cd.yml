@@ -5,52 +5,77 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  IMAGE: ghcr.io/${{ github.repository }}
+permissions:
+  contents: read
 
 jobs:
-  # ---------- STAGE 1: LINT ----------
+  # ---------- STAGE 1: STATIC ANALYSIS ----------
   lint:
+    name: Lint (ESLint)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4          # code pull
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      - name: Static analysis (ESLint)
-        run: npx eslint . -f json -o eslint-report.json || (npx eslint . && false)
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Run ESLint
+        run: |
+          npx eslint . -f json -o eslint-report.json || echo "LINT_FAILED=1" >> "$GITHUB_ENV"
+          npx eslint . || true
+          test -z "$LINT_FAILED"
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: eslint-report, path: eslint-report.json }
+        with:
+          name: eslint-report
+          path: eslint-report.json
 
-  # ---------- STAGE 2: UNIT TESTS ----------
+  # ---------- STAGE 2: UNIT + API TESTS ----------
   test:
+    name: Unit tests
     needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: npm }
-      - run: npm ci
-      - name: Run unit tests
-        run: npm test | tee test-output.txt
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - name: Run tests
+        run: npm test 2>&1 | tee test-output.txt
+      - name: Test metrics
+        if: always()
+        run: |
+          {
+            echo "### Test results"
+            grep -E '^# (tests|pass|fail|duration_ms)' test-output.txt | sed 's/^# /- /'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: test-output, path: test-output.txt }
+        with:
+          name: test-output
+          path: test-output.txt
 
-  # ---------- STAGE 3: BUILD & PUSH IMAGE ----------
+  # ---------- STAGE 3: BUILD & PUSH DOCKER IMAGE ----------
   build:
+    name: Build image
     needs: test
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    permissions: { contents: read, packages: write }
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v4
+      - name: Lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -62,51 +87,66 @@ jobs:
           push: true
           build-args: |
             GIT_COMMIT=${{ github.sha }}
+            APP_VERSION=1.0.${{ github.run_number }}
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
 
-  # ---------- STAGE 4: DEPLOY ----------
+  # ---------- STAGE 4: DEPLOY (main only) ----------
   deploy:
+    name: Deploy to production
     needs: build
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    environment: production
+    environment:
+      name: production
+      url: http://${{ secrets.SERVER_HOST }}
     steps:
-      - name: Deploy over SSH
+      - name: Lowercase image name
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+
+      - name: Deploy over SSH (with automatic rollback)
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
+          script_stop: true
           script: |
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
             docker pull ${{ env.IMAGE }}:${{ github.sha }}
+
             docker rm -f novatech-prev 2>/dev/null || true
+            docker stop novatech 2>/dev/null || true
             docker rename novatech novatech-prev 2>/dev/null || true
-            docker stop novatech-prev 2>/dev/null || true
+
             docker run -d --name novatech -p 80:3000 --restart unless-stopped ${{ env.IMAGE }}:${{ github.sha }}
 
-      - name: Smoke test /api/health
+            for i in 1 2 3 4 5; do
+              sleep 5
+              if docker exec novatech wget -qO- http://localhost:3000/api/health; then
+                echo; echo "Deploy OK"
+                docker rm -f novatech-prev 2>/dev/null || true
+                exit 0
+              fi
+            done
+
+            echo "Health check FAILED - rolling back"
+            docker rm -f novatech 2>/dev/null || true
+            docker rename novatech-prev novatech 2>/dev/null && docker start novatech || true
+            exit 1
+
+      - name: Smoke test from outside
         run: |
           for i in 1 2 3 4 5; do
+            if curl -fsS "http://${{ secrets.SERVER_HOST }}/api/health" | tee health.json; then exit 0; fi
             sleep 5
-            code=$(curl -s -o health.json -w "%{http_code}" http://${{ secrets.SERVER_HOST }}/api/health) && [ "$code" = "200" ] && cat health.json && exit 0
           done
-          echo "Health check failed"; exit 1
-
-      - name: Rollback on failure
-        if: failure()
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SERVER_SSH_KEY }}
-          script: |
-            docker rm -f novatech || true
-            docker rename novatech-prev novatech && docker start novatech
+          exit 1
 
   # ---------- STAGE 5: STATUS BOARD ----------
   report:
+    name: Pipeline report
     needs: [lint, test, build, deploy]
     if: always()
     runs-on: ubuntu-latest
@@ -115,11 +155,12 @@ jobs:
         run: |
           {
             echo "## NovaTech Pipeline Report"
+            echo ""
             echo "| Stage | Result |"
             echo "|---|---|"
             echo "| Lint | ${{ needs.lint.result }} |"
             echo "| Unit tests | ${{ needs.test.result }} |"
-            echo "| Build | ${{ needs.build.result }} |"
+            echo "| Build image | ${{ needs.build.result }} |"
             echo "| Deploy | ${{ needs.deploy.result }} |"
             echo ""
             echo "- Commit: \`${{ github.sha }}\`"
